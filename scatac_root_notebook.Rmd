@@ -1,0 +1,333 @@
+---
+title: "The regulatory landscape of Arabidopsis thaliana roots at single-cell resolution"
+output: html_notebook
+---
+
+Load relevant packages
+
+```{r}
+
+library(Signac)
+library(Seurat)
+library(GenomeInfoDb)
+library(Matrix)
+library(colormap)
+library(monocle3)
+library(reshape)
+library(data.table)
+library(gt)
+library(rtracklayer)
+library(DESeq)
+library(distances)
+library(tidyverse)
+library(reshape)
+options(stringsAsFactors = FALSE)
+
+```
+
+
+## Read in .cds object containing accessibility and predicted expression data.
+
+
+```{r}
+
+atac = readRDS('Dorrity_etal_scATAC_root.rds')
+atac$Cell = rownames(atac[[]])
+
+
+```
+
+## Plot the accessibility of a specific peak.
+
+```{r}
+
+# choose feature set (peaks, geneactivity, or pred_expression)
+DefaultAssay(object = atac) <- "peaks"
+
+# select a peak of interest
+feature_of_interest = 'Chr2:10386381-10389433'
+
+# set color palette
+virpal = c('#f7feae','#b7e6a5','#7ccba2','#46aea0','#089099','#00718b','#045275')
+colpal = colorRampPalette(virpal)(10)
+
+# plot
+plot.peak = FeaturePlot(
+  object = atac,
+  features = feature_of_interest,
+  pt.size = 1,
+  max.cutoff = 'q99',
+  ncol = 1,
+  order=TRUE,
+  cols = rev(colpal)
+)
+
+plot.peak
+
+
+```
+
+
+## Plot both the gene activity score (accessiblity) and the predicted expression for a gene.
+
+```{r}
+
+
+# select a gene of interest
+feature_of_interest = 'AT2G16740'
+
+# set color palette
+virpal = c('#f7feae','#b7e6a5','#7ccba2','#46aea0','#089099','#00718b','#045275')
+colpal = colorRampPalette(virpal)(10)
+
+
+
+
+# predicted expression
+DefaultAssay(object = atac) <- "pred_expression"
+plot.rna = FeaturePlot(
+  object = atac,
+  features = feature_of_interest,
+  pt.size = 1,
+  ncol = 1,
+  order=TRUE,
+  cols = rev(colpal)
+)
+
+plot.rna
+
+
+
+# gene + 400bp promoter accessibility
+DefaultAssay(object = atac) <- "geneactivity"
+plot.atac = FeaturePlot(
+  object = atac,
+  features = feature_of_interest,
+  pt.size = 1,
+  ncol = 1,
+  order=TRUE,
+  cols = rev(colpal)
+)
+
+plot.atac
+
+
+```
+
+## Identify marker peaks and marker genes in each cluster
+
+
+```{r}
+
+# choose feature set (peaks, geneactivity, or pred_expression)
+DefaultAssay(object = atac) <- "geneactivity"
+
+# DHS BASED
+diff_features <- FindAllMarkers(
+  object = atac,
+  min.pct = 0.1,
+  test.use = 'LR',
+)
+
+
+```
+
+
+
+## Compute ATAC-based endoreduplication score 
+
+```{r}
+
+# 
+coldata_df = as.data.frame(atac[[]])
+coldata_df$cuts_per_peak = atac$nCount_peaks/atac$nFeature_peaks
+
+# Build model relating cuts per peak to total umis
+loessModel <- loess(log10(cuts_per_peak) ~ log10(total), data=coldata_df, span=0.99, na.action = 'na.exclude')
+coldata_df$loess_fit = predict(loessModel)
+
+# get residuals of this fit, which represent how far each cells 'cuts per peak' is from the expectation based on total UMIs
+cells.resid = as.data.frame(loessModel$residuals)
+cells.resid$Cell = rownames(cells.resid)
+coldata_df$cuts_per_peak_residual = cells.resid$`loessModel$residuals`[match(coldata_df$Cell, cells.resid$Cell)]
+
+# set an arbitrary threshold for endoreduplicated cells: those with a residual >1sd of the mean.
+# visualize the distribution of residuals and the threshold
+sd_cutoff = 1
+hist(coldata_df$cuts_per_peak_residual, breaks=50, col = 'black')
+abline(v = mean(coldata_df$cuts_per_peak_residual) + sd_cutoff*sd(coldata_df$cuts_per_peak_residual), lty = 'longdash', col = 'grey')
+
+# using this threshold, add classification of endoreduplicated cells
+coldata_df$endoreduplicated_atac = FALSE
+coldata_df$endoreduplicated_atac[coldata_df$cuts_per_peak_residual > mean(coldata_df$cuts_per_peak_residual) + sd_cutoff*sd(coldata_df$cuts_per_peak_residual)] <- TRUE
+
+# visualize this classification with the original loess fit
+plot(log10(coldata_df$cuts_per_peak) ~ log10(coldata_df$total), pch=19, cex=0.25, bty='n', xlab = 'total umis', ylab = 'log cuts per peak')
+lines(log10(coldata_df$total[order(coldata_df$total)]), coldata_df$loess_fit[order(coldata_df$total)], col="grey", lwd=2)
+points(log10(cuts_per_peak) ~ log10(total), data = coldata_df[coldata_df$endoreduplicated_atac == TRUE,], pch=19, cex=0.25, col='steelblue')
+
+# and lastly, a plot to verify that cells called as endoreduplicated are not solely those with high total UMIs
+ggplot(coldata_df, aes(x = log10(total), y = cut_peak_residual_score, col = endoreduplicated_atac)) +
+  geom_point(size = 0.75) +
+  scale_color_manual(values = c('black', 'steelblue'))
+
+
+```
+
+## Using nearest-neighbor averaging to look at expression-based metrics in scATAC data
+
+```{r}
+
+# read in coembed metadata + coordinates
+coembed_coldata = read.table('data/Ryu_etal_integration_metadata.txt')
+coembed_coldata$Cell = rownames(coembed_coldata)
+
+# read in combined scRNA-seq metadata
+rna_coldata = read.csv('data/combined_scRNAseq_metadata.csv')
+
+
+# using the coembed metadata, combined with the expression-based metrics in the scRNA-seq metadata, we can transfer average values to scATAC cells (coembed_coldata contains both scRNA and scATAC cells embedded in the same coordinate space)
+df = merge(coembed_coldata, rna_coldata, by='Cell', all=TRUE)
+df.combined = df[df$tech %in% c('rna', 'atac'),]
+df.combined$tag = paste(df.combined$Cell, df.combined$tech, sep='|')
+rownames(df.combined) = paste(df.combined$Cell, df.combined$tech, sep='|')
+
+
+# set number of neighbors for each atac cell, and query RNA neighbors
+# this ends with a dataframe that, for each of the 5283 atac cells, gives 25 nearest rna neighbs (5283 * 25 = 132075)
+num_neighbors = 25
+dist.obj = distances(df.combined[,c('coembed_umap_1','coembed_umap_2')], id_variable = rownames(df.combined))
+neighbor.obj = nearest_neighbor_search(dist.obj, k=num_neighbors, query_indices = grep('atac', df.combined$tag), search_indices = grep('rna', df.combined$tag))
+neighbor.df = melt(neighbor.obj)
+neighbor.df$neighbor = df.combined$tag[neighbor.df$value]
+colnames(neighbor.df) = c('ref_id', 'reference', 'n_id', 'neighbor')
+df.nn = neighbor.df
+
+
+# transfer something from the rna metadata - a cell type label for example
+df.nn$manual_cell_type = df.combined$manual_cell_type[match(df.nn$reference, df.combined$tag)]
+df.nn$rna_bc = unlist(strsplit(df.nn$neighbor, split='\\|'))[seq(1,length(unlist(strsplit(df.nn$neighbor, split='\\|'))), 2)]
+
+# transfer cell type signature, rna-based developmental progression metric, and rna-based endoreduplication metric
+df.nn$proliferation_index = df.combined$proliferation_index[match(df.nn$neighbor, df.combined$tag)]
+df.nn$umi_gc_residual_batcho_scaled = df.combined$umi_gc_residual_batcho_scaled[match(df.nn$neighbor, df.combined$tag)]
+df.nn$endo_mod_ratio_8n = df.combined$endo_mod_ratio_8n[match(df.nn$neighbor, df.combined$tag)]
+
+# take means of each of those across the 25 neighbors
+neighbor_means = aggregate(df.nn$umi_gc_residual_batcho_scaled, by = list((df.nn$reference)), mean, na.rm=TRUE)
+neighbor_means$umi_gc_residual_batcho_scaled = aggregate(df.nn$umi_gc_residual_batcho_scaled, by = list((df.nn$reference)), mean, na.rm=TRUE)$x
+neighbor_means$endo_mod_ratio_8n = aggregate(df.nn$endo_mod_ratio_8n, by = list((df.nn$reference)), mean, na.rm=TRUE)$x
+neighbor_means$proliferation_index = aggregate(df.nn$proliferation_index, by = list((df.nn$reference)), mean, na.rm=TRUE)$x
+neighbor_means$cell = unlist(strsplit(as.character(neighbor_means$Group.1), split='\\|'))[seq(1,length(unlist(strsplit(as.character(neighbor_means$Group.1), split='\\|'))), 2)]
+
+## add these back to atac data
+atac$rna_devProgression_score = neighbor_means$umi_gc_residual_batcho_scaled[match(atac$Cell, neighbor_means$cell)]
+atac$rna_endoreduplication_8n_score = neighbor_means$endo_mod_ratio_8n[match(atac$Cell, neighbor_means$cell)]
+atac$rna_cellCycle_score = neighbor_means$proliferation_index[match(atac$Cell, neighbor_means$cell)]
+
+```
+
+
+
+## Perform linear regression on on predicted expression values
+
+### First, build a monocle CDS out of subset of atac cells
+
+```{r}
+
+ct_of_interest = c('epidermis', 'cortex', 'epi_cortex_endo_precursor')
+
+# let's use the monocle fitmodels framework for this
+# this will remake the count matrix based on the peak counts
+peak_anno  = as.data.frame(rownames(atac[['peaks']]))
+rownames(peak_anno) = peak_anno[,1]
+peak_anno$gene_short_name = peak_anno[,1]
+colnames(peak_anno) = c('gene_short_name','id')
+peak_anno = peak_anno[,c('id', 'gene_short_name')]
+
+# try swapping expression matrix with logTFIDF values
+#expression_matrix <- atac[['peaks']]@counts
+feature.counts = atac@assays$peaks
+expression_matrix = GetAssayData(feature.counts)
+rownames(expression_matrix) <- NULL
+cell_metadata <- atac[[]]
+gene_annotation <- peak_anno
+
+cds <- new_cell_data_set(expression_matrix,
+                         cell_metadata = cell_metadata,
+                         gene_metadata = gene_annotation)
+
+colData(cds)$n.umi = colData(cds)$total -  colData(cds)$duplicate
+colData(cds)$n.umi.log = log10(colData(cds)$n.umi)
+
+
+# this subsets to stele before processing further
+cds <- cds[,colData(cds)$cell_type %in% ct_of_interest]
+cds <- detect_genes(cds)
+cds <- estimate_size_factors(cds)
+cds <- preprocess_cds(cds, num_dim = 20, method='LSI')
+
+cds <- align_cds(cds,
+                 residual_model_formula_str = '~n.umi.log',
+                 preprocess_method = 'LSI')
+
+cds <- reduce_dimension(cds,
+                        preprocess_method = 'Aligned',
+                        reduction_method = 'UMAP',
+                        umap.min_dist = 0.2,
+                        umap.n_neighbors = 25L)
+
+cds <- cluster_cells(cds,
+                     resolution = 2e-3, method = 'leiden',
+                     reduction_method = 'UMAP')
+
+
+# build principal graph
+cds = learn_graph(cds, close_loop = FALSE,
+                       learn_graph_control = list(minimal_branch_len = 10,
+                                                  ncenter = 300))
+
+plot_cells(cds, cell_size = 1, color_cells_by = 'cell_type')
+
+```
+
+
+# Select a TF.
+
+```{r}
+
+gene_metadata = read.csv('data/combined_scRNAseq_gene_metadata.csv')
+
+# explore by family, print all TFs in that family
+family_of_interest = 'WRKY'
+gene_metadata[gene_metadata$tf_family %in% family_of_interest,]$id
+
+# Looking at TTG2
+tf_of_interest = 'AT2G37260'
+
+# subset the atac data to those cells present in subsetted monocle cds
+atac.sub = atac[,atac$Cell %in% rownames(colData(cds))]
+
+# run a single fit_models to get started
+colData(cds)$tf_score_1 = as.numeric(atac.sub@assays$pred_expression[tf_of_interest])
+
+
+### RUN FIT MODELS ON TF expression
+# the idea here, is that we can point to specific peaks that are associated with this TF directly
+# furthermore, if we could bin cells by their level of expression of this TF, we could make pseudobulk tracks showing it opening up
+gene_fits <- fit_models(cds, model_formula_str = "~tf_score_1")
+fit_coefs <- coefficient_table(gene_fits)
+open_terms <- fit_coefs %>% filter(term == "tf_score_1")
+
+
+locs = unlist(strsplit(as.character(open_terms$id), split = ':'))[seq(2, length(unlist(strsplit(as.character(open_terms$id), split=':'))), 2)]
+open_terms$start = as.numeric(unlist(strsplit(locs, split = '-'))[seq(1, length(unlist(strsplit(locs, split = '-'))), 2)])
+open_terms$stop = as.numeric(unlist(strsplit(locs, split = '-'))[seq(2, length(unlist(strsplit(locs, split = '-'))), 2)])
+open_terms$len = open_terms$stop - open_terms$start
+
+model_out = as.data.frame(open_terms)
+model_out = model_out[,!(names(model_out) %in% c('model', 'model_summary'))]
+write.table(model_out, file = 'epidermis_cortex_pre_TTG2_fitmodelsOut.txt')
+
+```
+
