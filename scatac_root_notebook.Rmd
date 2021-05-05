@@ -291,7 +291,6 @@ plot_cells(cds, cell_size = 1, color_cells_by = 'cell_type')
 
 ```
 
-
 # Select a TF.
 
 ```{r}
