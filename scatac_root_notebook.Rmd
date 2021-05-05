@@ -1,0 +1,134 @@
+---
+title: "The regulatory landscape of Arabidopsis thaliana roots at single-cell resolution"
+output: html_notebook
+---
+
+Load relevant packages
+
+```{r}
+
+library(Signac)
+library(Seurat)
+library(GenomeInfoDb)
+library(Matrix)
+library(colormap)
+library(monocle3)
+library(reshape)
+library(data.table)
+library(gt)
+library(rtracklayer)
+library(DESeq)
+options(stringsAsFactors = FALSE)
+
+```
+
+
+## Read in .cds object
+
+
+```{r}
+
+atac = readRDS('~/200618_root_crFilt_nnExprs.rds')
+atac$Cell = rownames(atac[[]])
+
+
+```
+
+## Plot the accessibility of a specific peak.
+
+```{r}
+
+
+
+```
+
+
+## Plot both the gene activity score (accessiblity) and the predicted expression for a gene.
+
+```{r}
+
+
+gene_of_interest = 'AT5G41040'
+
+dude = '#f7feae,#b7e6a5,#7ccba2,#46aea0,#089099,#00718b,#045275'
+virpal = unlist(strsplit(dude, split=','))
+virpal = colorRampPalette(virpal)(10)
+
+
+DefaultAssay(object = atac) <- "tfscore"
+plot.rna = FeaturePlot(
+  object = atac,
+  features = gene_of_interest,
+  pt.size = 1,
+  max.cutoff = 'q99',
+  ncol = 1,
+  order=TRUE,
+  cols = rev(virpal)
+)
+
+DefaultAssay(object = atac) <- "geneactivity"
+plot.atac = FeaturePlot(
+  object = atac,
+  features = gene_of_interest,
+  pt.size = 1,
+  max.cutoff = 'q99',
+  ncol = 1,
+  order=TRUE,
+  cols = rev(virpal)
+)
+
+plot.rna
+
+# output plots, side by side
+ggsave("~/Desktop/png_trash/endo_traj/plot_gene_early.png", plot.atac + plot.rna, bg = "transparent", dpi = 'retina', units = 'in', width = 5, height = 7)
+
+
+```
+
+## Identify marker peaks and marker genes in each cluster
+
+
+```{r}
+
+
+
+```
+
+
+## Compute developmental progression and endoreduplication scores
+
+### Compute developmental progression score with expression data
+
+```{r}
+
+```
+
+### Compute developmental progression score with atac data
+
+```{r}
+
+```
+
+### Compute endoredupliation score with rna data
+
+```{r}
+
+
+```
+
+### Compute endoreduplication score with atac data
+
+```{r}
+
+```
+
+
+## Perform linear regression on on predicted expression values
+
+```{r}
+
+
+
+
+```
+
