@@ -21,6 +21,7 @@ library(DESeq)
 library(distances)
 library(tidyverse)
 library(reshape)
+library(GEOquery)
 options(stringsAsFactors = FALSE)
 
 ```
@@ -31,9 +32,12 @@ options(stringsAsFactors = FALSE)
 
 ```{r}
 
-atac = readRDS('Dorrity_etal_scATAC_root.rds')
-atac$Cell = rownames(atac[[]])
+# Download the .rds from GEO directly
+getGEOSuppFiles("GSM5281420")
 
+# read in zipped seurat rds
+atac <- readRDS(gzcon(gzfile("GSM5281420/GSM5281420_Dorrity_etal_scATAC_root.rds.gz")))   
+atac$Cell = rownames(atac[[]])
 
 ```
 
